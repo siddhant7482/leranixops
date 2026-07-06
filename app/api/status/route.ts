@@ -5,8 +5,13 @@ import { NextResponse } from "next/server";
 // with env vars in Vercel; the defaults point at production.
 export const dynamic = "force-dynamic";
 
+// APP_URL is the public site, so a default is fine. SEARXNG_URL points at internal
+// infrastructure — it must come from an env var and is never hardcoded here or in
+// the repo. SEARXNG_AUTH, if set, is sent as a bearer token so the search instance
+// can require a shared secret instead of being open to the world.
 const APP_URL = (process.env.APP_URL || "https://www.learnixsai.tech").replace(/\/$/, "");
-const SEARXNG_URL = (process.env.SEARXNG_URL || "http://143.47.246.42:8080").replace(/\/$/, "");
+const SEARXNG_URL = (process.env.SEARXNG_URL || "").replace(/\/$/, "");
+const SEARXNG_AUTH = process.env.SEARXNG_AUTH || "";
 
 type Status = "operational" | "down" | "degraded";
 interface Component {
@@ -30,10 +35,13 @@ export async function GET() {
   const components: Component[] = [];
 
   // Frontend + backend internals come from the app's /api/health.
+  const searxInit = SEARXNG_AUTH ? { headers: { Authorization: `Bearer ${SEARXNG_AUTH}` } } : undefined;
   const [front, health, searx] = await Promise.all([
     timedFetch(APP_URL),
     timedFetch(`${APP_URL}/api/health`),
-    timedFetch(`${SEARXNG_URL}/search?q=ping&format=json`),
+    SEARXNG_URL
+      ? timedFetch(`${SEARXNG_URL}/search?q=ping&format=json`, 7000, searxInit)
+      : Promise.resolve(null),
   ]);
 
   components.push({
@@ -63,9 +71,13 @@ export async function GET() {
 
   components.push({
     name: "Search (SearXNG)",
-    status: searx.ok ? "operational" : "down",
-    detail: searx.ok ? "self-hosted instance responding" : `unreachable (${searx.status || "timeout"})`,
-    latencyMs: searx.ms,
+    status: !searx ? "degraded" : searx.ok ? "operational" : "down",
+    detail: !searx
+      ? "SEARXNG_URL not configured"
+      : searx.ok
+        ? "self-hosted instance responding"
+        : `unreachable (${searx.status || "timeout"})`,
+    latencyMs: searx ? searx.ms : null,
   });
 
   const anyDown = components.some((c) => c.status === "down");
