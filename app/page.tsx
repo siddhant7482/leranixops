@@ -37,7 +37,18 @@ export default function StatusPage() {
   const allUp = data?.components.every((c) => c.status === "operational");
 
   return (
-    <main>
+    <main className="narrow">
+      <div className="hero-status">
+        <span className="eyebrow">System status</span>
+        <h1>
+          <span className="gradient-text">LearnixSai</span> status
+        </h1>
+        <p>
+          Live health of every part of the platform, checked from the outside every 20 seconds. Curious how
+          it&apos;s built? Read the <Link href="/docs">engineering docs →</Link>
+        </p>
+      </div>
+
       <div className="banner">
         <span className={`dot ${loading ? "dot-idle" : DOT[overall]}`} />
         <h1>
