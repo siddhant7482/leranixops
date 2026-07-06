@@ -134,41 +134,92 @@ export function ApiExplorer({ endpoints }: { endpoints: Endpoint[] }) {
 }
 
 /* ─────────────  ENTITY EXPLORER (data model)  ───────────── */
+export interface EntityField {
+  name: string;
+  type: string;
+  tag?: "pk" | "fk" | "uniq" | "rel";
+}
 export interface Entity {
   name: string;
-  rel: string;
+  group: "Auth" | "Core" | "Learning" | "Gamification" | "Infra";
   desc: string;
-  fields: { name: string; key?: boolean }[];
+  fields: EntityField[];
+  relations?: string[];
 }
 
+const GROUPS = ["All", "Core", "Learning", "Gamification", "Auth", "Infra"] as const;
+const TAG_LABEL: Record<string, string> = { pk: "PK", fk: "FK", uniq: "UNIQUE", rel: "REL" };
+
 export function EntityExplorer({ entities }: { entities: Entity[] }) {
-  const [sel, setSel] = useState(0);
-  const e = entities[sel];
+  const [group, setGroup] = useState<(typeof GROUPS)[number]>("All");
+  const [selName, setSelName] = useState(entities[0]?.name);
+
+  const shown = group === "All" ? entities : entities.filter((e) => e.group === group);
+  const e = entities.find((x) => x.name === selName) ?? shown[0] ?? entities[0];
+
   return (
     <div>
+      <div className="tabs-bar" style={{ marginBottom: 16 }}>
+        {GROUPS.map((g) => (
+          <button
+            key={g}
+            className={`tab-btn ${group === g ? "active" : ""}`}
+            onClick={() => setGroup(g)}
+          >
+            <span className="tdot" />
+            {g}
+            <span className="grp-count">
+              {g === "All" ? entities.length : entities.filter((x) => x.group === g).length}
+            </span>
+          </button>
+        ))}
+      </div>
+
       <div className="entity-grid">
-        {entities.map((en, i) => (
+        {shown.map((en) => (
           <div
             key={en.name}
-            className={`entity ${sel === i ? "active" : ""}`}
-            onClick={() => setSel(i)}
+            className={`entity ${e?.name === en.name ? "active" : ""}`}
+            onClick={() => setSelName(en.name)}
           >
             <div className="en-name">{en.name}</div>
-            <div className="en-rel">{en.rel}</div>
+            <div className="en-rel">{en.fields.length} fields</div>
           </div>
         ))}
       </div>
-      <div className="entity-detail fade-key" key={e.name}>
-        <h4>{e.name}</h4>
-        <p className="en-desc">{e.desc}</p>
-        <div className="field-list">
-          {e.fields.map((f) => (
-            <span key={f.name} className="field-tag">
-              {f.key ? <b>{f.name}</b> : f.name}
-            </span>
-          ))}
+
+      {e && (
+        <div className="entity-detail fade-key" key={e.name}>
+          <div className="ed-head">
+            <h4>{e.name}</h4>
+            <span className={`pill grp-${e.group.toLowerCase()}`}>{e.group}</span>
+          </div>
+          <p className="en-desc">{e.desc}</p>
+          <table className="fieldtable">
+            <tbody>
+              {e.fields.map((f) => (
+                <tr key={f.name}>
+                  <td className="fn">{f.name}</td>
+                  <td className="ft">{f.type}</td>
+                  <td className="fb">
+                    {f.tag && <span className={`ftag ftag-${f.tag}`}>{TAG_LABEL[f.tag]}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {e.relations && e.relations.length > 0 && (
+            <div className="ed-rel">
+              <span className="ed-rel-k">Relations</span>
+              <div className="field-list">
+                {e.relations.map((r) => (
+                  <span key={r} className="field-tag">{r}</span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

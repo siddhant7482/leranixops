@@ -588,23 +588,312 @@ ON CONFLICT (key) DO UPDATE SET
           <section id="data" className="section">
             <h2>Data model</h2>
             <p className="section-sub">
-              The core entities and how they relate. Click one to see its role and key fields.
+              17 Prisma models on PostgreSQL, ID strategy <code>cuid()</code> throughout. Filter by domain and
+              click any entity for its real fields, types and relations.
             </p>
+
+            <h3 className="prose">Relationship map</h3>
+            <p className="prose">
+              Everything hangs off <code>User</code> and <code>Course</code>. A course owns its modules and
+              resources; a module optionally owns a quiz; progress and XP are per-user.
+            </p>
+            <div className="er-map scroll-x">
+{`User ─┬─< Course ─┬─< Module ─┬─< Resource ─< ResourceProgress >─ User
+      │           │           └── Quiz ─< QuizAttempt >─ User
+      │           ├─── GenerationJob        (1:1, poll target)
+      │           └─< CourseRating >─ User
+      ├─< XpTransaction        (append-only XP ledger)
+      ├─< UserAchievement      (25 unlockables)
+      ├─< LearningPath ─< PathNode ··> Course   (skill trees)
+      └─< Account / Session    (NextAuth)
+
+RateLimit                       (standalone · cross-dyno limiter)`}
+            </div>
+
+            <h3 className="prose">Entity explorer</h3>
             <EntityExplorer
               entities={[
-                { name: "User", rel: "→ Course, XP, Progress", desc: "The learner. Carries progression state directly.", fields: [{ name: "id", key: true }, { name: "email" }, { name: "xp" }, { name: "level" }, { name: "streakCount" }] },
-                { name: "Course", rel: "→ Module · 1:1 GenerationJob", desc: "A generated course. Status gates whether it appears in listings.", fields: [{ name: "id", key: true }, { name: "topic" }, { name: "level" }, { name: "status" }, { name: "totalResources" }, { name: "completedResources" }] },
-                { name: "Module", rel: "Course → Resource", desc: "An ordered section of a course.", fields: [{ name: "id", key: true }, { name: "courseId", key: true }, { name: "title" }, { name: "sortOrder" }] },
-                { name: "Resource", rel: "belongs to Module", desc: "A single curated item — the real content.", fields: [{ name: "id", key: true }, { name: "type" }, { name: "url" }, { name: "youtubeVideoId" }, { name: "thumbnailUrl" }, { name: "aiSummary" }] },
-                { name: "GenerationJob", rel: "1:1 Course", desc: "The progress row the frontend polls during generation.", fields: [{ name: "courseId", key: true }, { name: "status" }, { name: "step" }, { name: "current" }, { name: "total" }, { name: "canFillWithAI" }, { name: "error" }] },
-                { name: "ResourceProgress", rel: "User × Resource", desc: "Per-user completion + notes for a resource.", fields: [{ name: "userId", key: true }, { name: "resourceId", key: true }, { name: "status" }, { name: "xpEarned" }, { name: "notes" }] },
-                { name: "XpTransaction", rel: "audit ledger", desc: "Append-only record of every XP award.", fields: [{ name: "id", key: true }, { name: "userId", key: true }, { name: "amount" }, { name: "reason" }] },
-                { name: "Quiz", rel: "→ QuizAttempt", desc: "AI-generated quiz for a module.", fields: [{ name: "id", key: true }, { name: "moduleId", key: true }, { name: "questions" }] },
-                { name: "CourseRating", rel: "User × Course", desc: "Marketplace ratings.", fields: [{ name: "userId", key: true }, { name: "courseId", key: true }, { name: "rating" }] },
-                { name: "LearningPath", rel: "→ PathNode", desc: "A skill-tree of courses.", fields: [{ name: "id", key: true }, { name: "title" }] },
-                { name: "RateLimit", rel: "infra", desc: "Cross-dyno rate limiter (replaced an in-memory map).", fields: [{ name: "key", key: true }, { name: "count" }, { name: "resetAt" }] },
+                // ── Core ──
+                {
+                  name: "User", group: "Core",
+                  desc: "The learner and their progression state. NextAuth credentials + gamification live on the same row.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "email", type: "String?", tag: "uniq" },
+                    { name: "username", type: "String?", tag: "uniq" },
+                    { name: "password", type: "String?" },
+                    { name: "xp", type: "Int @default(0)" },
+                    { name: "level", type: "Int @default(1)" },
+                    { name: "streakCount", type: "Int @default(0)" },
+                    { name: "longestStreak", type: "Int @default(0)" },
+                    { name: "lastActive", type: "DateTime?" },
+                    { name: "avatar", type: "String @default('default')" },
+                    { name: "avatarFrame", type: "String @default('none')" },
+                    { name: "title", type: "String @default('Novice')" },
+                    { name: "characterData", type: "Json?" },
+                    { name: "createdAt", type: "DateTime" },
+                  ],
+                  relations: ["courses", "resourceProgress", "quizAttempts", "xpTransactions", "achievements", "courseRatings", "learningPaths", "accounts", "sessions"],
+                },
+                {
+                  name: "Course", group: "Core",
+                  desc: "A generated course. status gates listing visibility; the marketplace fields (enrollCount, avgRating) support publishing.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "title", type: "String" },
+                    { name: "description", type: "String?" },
+                    { name: "topic", type: "String" },
+                    { name: "level", type: "String @default('beginner')" },
+                    { name: "status", type: "String @default('generating')" },
+                    { name: "totalResources", type: "Int @default(0)" },
+                    { name: "completedResources", type: "Int @default(0)" },
+                    { name: "isPublished", type: "Boolean @default(false)" },
+                    { name: "enrollCount", type: "Int @default(0)" },
+                    { name: "avgRating", type: "Float @default(0)" },
+                    { name: "ratingCount", type: "Int @default(0)" },
+                    { name: "originalCourseId", type: "String?" },
+                    { name: "createdAt / updatedAt", type: "DateTime" },
+                  ],
+                  relations: ["user", "modules", "resources", "resourceProgress", "ratings", "generationJob (1:1)"],
+                },
+                {
+                  name: "Module", group: "Core",
+                  desc: "An ordered section of a course. Owns its resources and (optionally) one quiz.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "courseId", type: "String", tag: "fk" },
+                    { name: "title", type: "String" },
+                    { name: "description", type: "String?" },
+                    { name: "sortOrder", type: "Int" },
+                    { name: "createdAt", type: "DateTime" },
+                  ],
+                  relations: ["course", "resources", "quiz (1:1?)"],
+                },
+                {
+                  name: "Resource", group: "Core",
+                  desc: "A single curated item — the real content. aiSummary caches the article summary payload.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "moduleId", type: "String", tag: "fk" },
+                    { name: "courseId", type: "String", tag: "fk" },
+                    { name: "title", type: "String" },
+                    { name: "description", type: "String?" },
+                    { name: "type", type: "String" },
+                    { name: "url", type: "String" },
+                    { name: "youtubeVideoId", type: "String?" },
+                    { name: "thumbnailUrl", type: "String?" },
+                    { name: "duration", type: "String?" },
+                    { name: "sortOrder", type: "Int" },
+                    { name: "metadata", type: "Json?" },
+                    { name: "aiSummary", type: "Json?" },
+                    { name: "createdAt", type: "DateTime" },
+                  ],
+                  relations: ["module", "course", "progress[]"],
+                },
+                {
+                  name: "GenerationJob", group: "Core",
+                  desc: "1:1 with a Course — the progress row the frontend polls every ~1.5s during generation.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "courseId", type: "String", tag: "uniq" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "status", type: "String @default('queued')" },
+                    { name: "step", type: "String?" },
+                    { name: "current", type: "Int @default(0)" },
+                    { name: "total", type: "Int @default(0)" },
+                    { name: "message", type: "String?" },
+                    { name: "resourcesFound", type: "Int @default(0)" },
+                    { name: "topicClass", type: "String?" },
+                    { name: "thinModules", type: "Json?" },
+                    { name: "canFillWithAI", type: "Boolean @default(false)" },
+                    { name: "error", type: "String?" },
+                    { name: "createdAt / updatedAt", type: "DateTime" },
+                  ],
+                  relations: ["course"],
+                },
+                // ── Learning ──
+                {
+                  name: "ResourceProgress", group: "Learning",
+                  desc: "Per-user completion + notes for one resource. Unique on (userId, resourceId).",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "resourceId", type: "String", tag: "fk" },
+                    { name: "courseId", type: "String", tag: "fk" },
+                    { name: "status", type: "String @default('not_started')" },
+                    { name: "completedAt", type: "DateTime?" },
+                    { name: "xpEarned", type: "Int @default(0)" },
+                    { name: "notes", type: "String?" },
+                    { name: "@@unique", type: "[userId, resourceId]", tag: "uniq" },
+                  ],
+                  relations: ["user", "resource", "course"],
+                },
+                {
+                  name: "Quiz", group: "Learning",
+                  desc: "One AI-generated quiz per module. questions is a JSON array of question objects.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "moduleId", type: "String", tag: "uniq" },
+                    { name: "questions", type: "Json" },
+                    { name: "createdAt", type: "DateTime" },
+                  ],
+                  relations: ["module", "attempts[]"],
+                },
+                {
+                  name: "QuizAttempt", group: "Learning",
+                  desc: "A single attempt at a quiz, with the answers, score and XP awarded.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "quizId", type: "String", tag: "fk" },
+                    { name: "answers", type: "Json" },
+                    { name: "score", type: "Int" },
+                    { name: "totalQs", type: "Int" },
+                    { name: "xpEarned", type: "Int @default(0)" },
+                    { name: "createdAt", type: "DateTime" },
+                  ],
+                  relations: ["user", "quiz"],
+                },
+                {
+                  name: "LearningPath", group: "Learning",
+                  desc: "A goal-oriented skill tree grouping courses into a progression.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "title", type: "String" },
+                    { name: "description", type: "String?" },
+                    { name: "goal", type: "String" },
+                    { name: "status", type: "String @default('active')" },
+                    { name: "createdAt / updatedAt", type: "DateTime" },
+                  ],
+                  relations: ["user", "nodes[]"],
+                },
+                {
+                  name: "PathNode", group: "Learning",
+                  desc: "A node in a skill tree. parentIds (JSON string) encodes the DAG of prerequisites.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "pathId", type: "String", tag: "fk" },
+                    { name: "title", type: "String" },
+                    { name: "description", type: "String?" },
+                    { name: "level", type: "String @default('beginner')" },
+                    { name: "sortOrder", type: "Int" },
+                    { name: "courseId", type: "String?" },
+                    { name: "status", type: "String @default('locked')" },
+                    { name: "parentIds", type: "String @default('[]')" },
+                  ],
+                  relations: ["path"],
+                },
+                // ── Gamification ──
+                {
+                  name: "XpTransaction", group: "Gamification",
+                  desc: "Append-only ledger — every XP award writes one row, so progression is fully auditable.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "amount", type: "Int" },
+                    { name: "reason", type: "String" },
+                    { name: "referenceId", type: "String?" },
+                    { name: "createdAt", type: "DateTime" },
+                  ],
+                  relations: ["user"],
+                },
+                {
+                  name: "UserAchievement", group: "Gamification",
+                  desc: "Join row recording an unlocked achievement. Unique on (userId, achievementId).",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "achievementId", type: "String" },
+                    { name: "unlockedAt", type: "DateTime" },
+                    { name: "@@unique", type: "[userId, achievementId]", tag: "uniq" },
+                  ],
+                  relations: ["user"],
+                },
+                {
+                  name: "CourseRating", group: "Gamification",
+                  desc: "Marketplace rating, one per user per course. Feeds Course.avgRating / ratingCount.",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "courseId", type: "String", tag: "fk" },
+                    { name: "rating", type: "Int" },
+                    { name: "createdAt / updatedAt", type: "DateTime" },
+                    { name: "@@unique", type: "[userId, courseId]", tag: "uniq" },
+                  ],
+                  relations: ["user", "course"],
+                },
+                // ── Auth ──
+                {
+                  name: "Account", group: "Auth",
+                  desc: "NextAuth OAuth/credential account link. Unique on (provider, providerAccountId).",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "provider", type: "String" },
+                    { name: "providerAccountId", type: "String" },
+                    { name: "access_token / refresh_token", type: "String?" },
+                    { name: "expires_at", type: "Int?" },
+                    { name: "@@unique", type: "[provider, providerAccountId]", tag: "uniq" },
+                  ],
+                  relations: ["user"],
+                },
+                {
+                  name: "Session", group: "Auth",
+                  desc: "NextAuth session row (the app uses JWT strategy, but the adapter model exists).",
+                  fields: [
+                    { name: "id", type: "String", tag: "pk" },
+                    { name: "sessionToken", type: "String", tag: "uniq" },
+                    { name: "userId", type: "String", tag: "fk" },
+                    { name: "expires", type: "DateTime" },
+                  ],
+                  relations: ["user"],
+                },
+                {
+                  name: "VerificationToken", group: "Auth",
+                  desc: "NextAuth email-verification token. Unique on (identifier, token).",
+                  fields: [
+                    { name: "identifier", type: "String" },
+                    { name: "token", type: "String", tag: "uniq" },
+                    { name: "expires", type: "DateTime" },
+                  ],
+                },
+                // ── Infra ──
+                {
+                  name: "RateLimit", group: "Infra",
+                  desc: "Cross-dyno rate limiter. Standalone table, atomic upsert keyed by a string (e.g. user:action).",
+                  fields: [
+                    { name: "key", type: "String", tag: "pk" },
+                    { name: "count", type: "Int @default(0)" },
+                    { name: "resetAt", type: "DateTime" },
+                  ],
+                },
               ]}
             />
+
+            <h3 className="prose">Status &amp; enum values</h3>
+            <p className="prose">These are string columns (no DB enums), so the valid values live in code. The ones that matter:</p>
+            <div className="legend">
+              <div className="lg"><div className="lg-k">Course.status</div><div className="lg-v"><code>generating</code> · <code>active</code> · <code>completed</code> · <code>failed</code> — listings hide <code>generating</code> + <code>failed</code>.</div></div>
+              <div className="lg"><div className="lg-k">GenerationJob.status</div><div className="lg-v"><code>queued</code> · <code>running</code> · <code>done</code> · <code>failed</code></div></div>
+              <div className="lg"><div className="lg-k">GenerationJob.step</div><div className="lg-v"><code>classifying</code> · <code>structure</code> · <code>module</code> · <code>done</code></div></div>
+              <div className="lg"><div className="lg-k">Resource.type</div><div className="lg-v"><code>youtube</code> · <code>article</code> · <code>wikipedia</code> · <code>paper</code> · <code>ai_generated</code></div></div>
+              <div className="lg"><div className="lg-k">ResourceProgress.status</div><div className="lg-v"><code>not_started</code> · <code>in_progress</code> · <code>completed</code></div></div>
+              <div className="lg"><div className="lg-k">topicClass</div><div className="lg-v"><code>developer_tech</code> · <code>academic_science</code> · <code>business_founder</code> · <code>history_humanities</code> · <code>practical_skill</code></div></div>
+              <div className="lg"><div className="lg-k">PathNode.status</div><div className="lg-v"><code>locked</code> · <code>active</code> · <code>completed</code></div></div>
+              <div className="lg"><div className="lg-k">Course.level</div><div className="lg-v"><code>beginner</code> · <code>intermediate</code> · <code>advanced</code></div></div>
+            </div>
+
+            <div className="callout">
+              <span className="ci">🗄️</span>
+              <p>
+                <strong>One database, three roles.</strong> These models live alongside the pg-boss queue (its own{" "}
+                <code>pgboss</code> schema) and the <code>RateLimit</code> table on a single Heroku Postgres.
+                Prisma 7 with the <code>@prisma/adapter-pg</code> driver adapter; migrations applied via{" "}
+                <code>prisma migrate deploy</code> on release.
+              </p>
+            </div>
           </section>
 
           {/* ══════════════ 9. CI/CD ══════════════ */}
