@@ -25,9 +25,19 @@ async function timedFetch(url: string, ms = 7000, init?: RequestInit) {
   const t0 = Date.now();
   try {
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(ms), cache: "no-store" });
-    return { ok: res.ok, status: res.status, ms: Date.now() - t0, res };
+    // Read the body NOW, not later. These checks run in parallel and we await them
+    // together — if a sibling check is slow (e.g. SearXNG burning its full timeout),
+    // this response's own AbortSignal fires before we'd get around to parsing, and
+    // the body stream is dead. That made a perfectly healthy app report "unknown".
+    let data: Record<string, unknown> | null = null;
+    try {
+      data = (await res.json()) as Record<string, unknown>;
+    } catch {
+      data = null; // non-JSON (e.g. the HTML frontend check) — fine
+    }
+    return { ok: res.ok, status: res.status, ms: Date.now() - t0, res, data };
   } catch (e) {
-    return { ok: false, status: 0, ms: Date.now() - t0, error: e instanceof Error ? e.message : "error" };
+    return { ok: false, status: 0, ms: Date.now() - t0, data: null, error: e instanceof Error ? e.message : "error" };
   }
 }
 
@@ -51,17 +61,17 @@ export async function GET() {
     latencyMs: front.ms,
   });
 
-  // Parse the health payload for API / DB / worker.
-  let checks: Record<string, string> = {};
-  if (health.res) {
-    try { checks = (await health.res.json())?.checks ?? {}; } catch {}
-  }
+  // Parse the health payload for API / DB / worker (already read in timedFetch).
+  const checks: Record<string, string> =
+    (health.data?.checks as Record<string, string> | undefined) ?? {};
+  const gotHealth = !!health.data;
+
   const sub = (key: string, name: string, okDetail: string) => {
-    const up = health.res ? checks[key] === "ok" : false;
+    const up = gotHealth && checks[key] === "ok";
     components.push({
       name,
       status: up ? "operational" : "down",
-      detail: health.res ? (up ? okDetail : `reporting "${checks[key] ?? "unknown"}"`) : "health check unreachable",
+      detail: gotHealth ? (up ? okDetail : `reporting "${checks[key] ?? "unknown"}"`) : "health check unreachable",
       latencyMs: key === "api" ? health.ms : null,
     });
   };
